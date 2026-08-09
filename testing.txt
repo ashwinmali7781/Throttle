@@ -1,0 +1,221 @@
+
+THROTTLE — DISTRIBUTED RATE LIMITER — TESTING GUIDE
+
+
+This file walks a new tester through setting up and exercising the app:
+creating a rule, hitting the demo endpoint, watching it get throttled,
+and confirming things in the Dashboard/Logs UI.
+
+1. PREREQUISITES
+
+- Node.js 20+
+- Docker Desktop (recommended - runs Mongo + Redis + Prometheus + Grafana
+  for you), OR local MongoDB + Redis installs
+- A free Clerk account (https://clerk.com) for auth
+
+2. SETUP
+
+
+Option A - Docker (recommended):
+
+    export CLERK_SECRET_KEY=sk_test_xxx
+    export CLERK_PUBLISHABLE_KEY=pk_test_xxx
+    docker compose up --build
+
+    Frontend:   http://localhost:8080
+    Backend:    http://localhost:4000
+    Prometheus: http://localhost:9090
+    Grafana:    http://localhost:3001  (login: admin / admin)
+
+Option B - Local, no Docker:
+
+    Terminal 1:
+        cd backend
+        cp .env.example .env
+        # edit .env -> set CLERK_SECRET_KEY, MONGO_URI, REDIS_URL
+        npm install
+        npm run dev          # http://localhost:4000
+
+    Terminal 2:
+        cd frontend
+        cp .env.example .env
+        # edit .env -> set VITE_CLERK_PUBLISHABLE_KEY
+        npm install
+        npm run dev           # http://localhost:5173
+
+
+3. SIGN IN AND GET ADMIN ACCESS
+
+1. Open the frontend, sign up / sign in via Clerk.
+2. In the Clerk dashboard, go to Users -> (your user) -> Public metadata,
+   and set:
+        { "role": "admin" }
+   Rules and Analytics pages require this role.
+3. Refresh the app - you should now see Dashboard, Rules, Logs, API Keys
+   in the sidebar.
+
+
+4. CREATE YOUR FIRST RULE
+
+Go to Rules -> New rule, and fill in:
+
+    Name:              test-rule
+    Tenant ID:         default
+    Endpoint pattern:  /api/demo/*
+    Identify by:       IP Address
+    Algorithm:         Fixed Window
+    Limit:             10
+    Window (seconds):  60
+    Priority:          0
+    Upstream URL:      (leave blank)
+
+Click "Create rule".
+
+NOTE: If more than one rule matches the same endpoint pattern, the one
+with the HIGHER Priority wins. Equal priority falls back to insertion
+order, which is not obvious - so if your test doesn't behave as
+expected, check the Rules table for a second overlapping rule before
+assuming something is broken.
+
+
+5. TEST IT - BURST TRAFFIC (PowerShell)
+
+Fire 20 requests at the demo endpoint and watch it get throttled after
+10:
+
+    1..20 | ForEach-Object {
+      curl.exe -s -o NUL -w "%{http_code}`n" http://localhost:4000/api/demo/ping
+    }
+
+Expected: ten "200"s, then "429"s for the rest.
+
+
+5b. TEST IT - BURST TRAFFIC (macOS / Linux / Git Bash)
+
+    for i in {1..20}; do
+      curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/api/demo/ping
+    done
+
+
+6. SEE WHICH RULE MATCHED (debug headers)
+
+Add -i to any curl call to see the full response headers, including:
+
+    X-RateLimit-Limit
+    X-RateLimit-Remaining
+    X-RateLimit-Rule-Id
+    X-RateLimit-Rule-Name
+    X-RateLimit-Rule-Priority
+    X-RateLimit-Identifier-Type
+
+    curl.exe -i http://localhost:4000/api/demo/ping
+
+This tells you exactly which rule is being enforced - useful if you
+have multiple overlapping rules and aren't sure which one is winning.
+
+
+7. TEST IDENTIFY-BY-API-KEY RULES
+------------------------------------------------------------------------
+1. Go to API Keys -> Generate key -> copy the raw key shown (shown once).
+2. Create or edit a rule with "Identify by: API Key".
+3. Send requests with the key attached:
+
+    curl.exe -i -H "X-Api-Key: <your-key>" http://localhost:4000/api/demo/ping
+
+4. Confirm two different keys get independent buckets - swap in a
+   different key string and confirm it isn't throttled by the first
+   key's usage.
+
+
+8. TEST MULTI-TENANCY
+------------------------------------------------------------------------
+Same endpoint, different tenants, independent counters:
+
+    curl.exe -H "X-Tenant-Id: acme" http://localhost:4000/api/demo/ping
+    curl.exe -H "X-Tenant-Id: globex" http://localhost:4000/api/demo/ping
+
+Requests default to tenant "default" if the header is omitted. Create
+a rule scoped to a specific Tenant ID and confirm it only applies to
+requests carrying that tenant header.
+
+
+9. TEST THE OTHER ALGORITHMS
+------------------------------------------------------------------------
+Create separate rules (different endpoint patterns, e.g. /api/demo/orders)
+and compare behavior:
+
+    Fixed Window            - hard reset every window, allows edge bursts
+    Sliding Window Counter  - smooths the edge-burst problem
+    Token Bucket            - allows a burst up to capacity, then throttles
+                               to a steady rate (refills continuously)
+    Leaky Bucket            - strictly smooth output, no bursts at all
+
+Good test: set Limit=10, Window=10s on each, fire 20 rapid requests, and
+compare how many succeed and how quickly blocked requests start
+succeeding again.
+
+
+10. TEST GATEWAY MODE (reverse proxy)
+------------------------------------------------------------------------
+1. Create a rule with:
+        Endpoint pattern: /gateway/posts/*
+        Upstream URL:     https://jsonplaceholder.typicode.com
+2. Hit it:
+        curl.exe http://localhost:4000/gateway/posts/1
+   You should get a real JSON response proxied from JSONPlaceholder,
+   with rate limiting applied first.
+
+
+
+11. WATCH IT LIVE
+------------------------------------------------------------------------
+- Dashboard: shows total/allowed/blocked requests, success rate, and a
+  live-updating chart while you run tests in another terminal.
+- Logs: filterable, paginated log of every rate-limited request (filter
+  by client, tenant, endpoint, status, algorithm).
+
+Open the Dashboard in one browser tab, then run a burst test in
+PowerShell - the numbers and chart should update in real time via
+Socket.io.
+
+
+12. RUN THE AUTOMATED TESTS
+------------------------------------------------------------------------
+    cd backend
+    npm test
+
+Covers Fixed Window and Sliding Window Counter against an in-memory
+fake Redis. Token Bucket and Leaky Bucket use Lua scripts (EVALSHA) and
+are best verified live via the demo endpoints above, against a real
+Redis instance.
+
+
+13. CHECK METRICS (optional)
+------------------------------------------------------------------------
+    curl.exe http://localhost:4000/metrics
+
+Raw Prometheus-format output. If running via Docker Compose, open
+Grafana (http://localhost:3001) and look for the "Throttle - Rate
+Limiter" dashboard - already provisioned, no setup needed.
+
+
+QUICK REFERENCE - USEFUL ENDPOINTS
+------------------------------------------------------------------------
+GET    /api/demo/ping                Simple demo endpoint
+GET    /api/demo/orders               Demo endpoint
+POST   /api/demo/orders               Demo endpoint (POST)
+ANY    /gateway/*                     Gateway mode (needs upstreamUrl)
+GET    /health                        Liveness check, no auth
+GET    /metrics                       Prometheus metrics, no auth
+
+GET    /api/rules                     List rules (admin only)
+POST   /api/rules                     Create rule (admin only)
+GET    /api/keys                      List your API keys
+POST   /api/keys                      Generate an API key
+GET    /api/analytics/summary         24h totals (admin only)
+GET    /api/analytics/logs            Filterable request log (admin only)
+
+
+
+END OF TESTING GUIDE
+========================================================================
