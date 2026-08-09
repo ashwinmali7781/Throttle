@@ -47,7 +47,7 @@ export function AppShell() {
           ))}
         </nav>
 
-        <div className="mt-auto pt-5 border-t border-base-700/60 flex items-center gap-2">
+        <div className="mt-auto pt-5 border-t border-base-700/65 flex items-center gap-2">
           <UserButton afterSignOutUrl="/" />
           {!me.isLoading && (
             <Pill tone={isAdmin ? "accent" : "slate"}>{isAdmin ? "admin" : "member"}</Pill>
