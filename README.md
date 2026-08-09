@@ -28,6 +28,13 @@ and CI/CD to GHCR.
 
 ---
 
+## 🎥 Demo
+
+👉 **Watch the project in action:**
+https://drive.google.com/file/d/1AnKLq4HzjRd7CFganWJwaaxBH2exhcZu/view?usp=sharing
+
+---
+
 ## Screenshots
 
 <table>
